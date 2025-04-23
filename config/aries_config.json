@@ -1,0 +1,76 @@
+{
+    "device":"Aries",
+    "axes_sum":7,
+    "axes": [
+    {
+        "name": "z1",
+        "ax_num": 1,
+        "units":"um",
+        "max_pulse": 20000,
+        "min_pulse":-20000,
+        "max_speed_pulse": 20000,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.125
+    },
+    {
+        "name": "x",
+        "ax_num": 2,
+        "units":"um",
+        "max_pulse": 150000,
+        "min_pulse":-150000,
+        "max_speed_pulse": 40000,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.02
+    },
+    {
+        "name": "y",
+        "ax_num": 3,
+        "units":"um",
+        "max_pulse": 150000,
+        "min_pulse":-150000,
+        "max_speed_pulse": 40000,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.02
+    },
+    {
+        "name": "θz",
+        "ax_num": 4,
+        "units":"deg",
+        "max_pulse": 2536,
+        "min_pulse":-2536,
+        "max_speed_pulse": 40000,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.001273
+    },
+    {
+        "name": "z2",
+        "ax_num": 5,
+        "units":"um",
+        "max_pulse": 20000,
+        "min_pulse":-20000,
+        "max_speed_pulse": 20000,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.125
+    },
+    {
+        "name": "θy",
+        "ax_num": 6,
+        "units":"deg",
+        "max_pulse": 5646,
+        "min_pulse":-5646,
+        "max_speed_pulse": 15000                                    ,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.000797
+    },
+    {
+        "name": "θx",
+        "ax_num": 7,
+        "units":"deg",
+        "max_pulse": 4703,
+        "min_pulse":-4703,
+        "max_speed_pulse": 15000,
+        "start_velocity_pulse": 0.5,
+        "pulse_per_unit": 0.001063
+    }
+  ]
+}
