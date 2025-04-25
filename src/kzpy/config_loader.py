@@ -3,14 +3,13 @@ import json
 import os
 from typing import Any, Dict
 
-# プロジェクトルートからの config ディレクトリ
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
-
+# パッケージ内の config ディレクトリ（src/kzpy/config）
+PKG_DIR = os.path.dirname(__file__)
+CONFIG_DIR = os.path.join(PKG_DIR, "config")
 # デバイス別デフォルト設定ファイルパス
 DEFAULT_CONFIG_PATHS = {
-    "aries": os.path.join(CONFIG_DIR, "aries_config.json"),
-    "crux":  os.path.join(CONFIG_DIR, "crux_config.json"),
+    key: os.path.join(CONFIG_DIR, f"{key}_config.json")
+    for key in ("aries", "crux")
 }
 
 # JSON の必須キー定義
