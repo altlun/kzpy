@@ -6,6 +6,7 @@ from typing import Any, Dict
 # パッケージ内の config ディレクトリ（src/kzpy/config）
 PKG_DIR = os.path.dirname(__file__)
 CONFIG_DIR = os.path.join(PKG_DIR, "config")
+
 # デバイス別デフォルト設定ファイルパス
 DEFAULT_CONFIG_PATHS = {
     key: os.path.join(CONFIG_DIR, f"{key}_config.json")
