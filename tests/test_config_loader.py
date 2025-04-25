@@ -1,7 +1,7 @@
 import os
 import json
 import pytest
-from lib.config_loader import load_config, check_config, DEFAULT_CONFIG_PATHS
+from src.config_loader import load_config, check_config, DEFAULT_CONFIG_PATHS
 
 # デフォルト設定ファイルパス
 ARIES_CONFIG = DEFAULT_CONFIG_PATHS['aries']
