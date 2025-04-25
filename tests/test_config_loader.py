@@ -1,83 +1,74 @@
-import os
+"""
+src/kzpy/tests/test_config_loader.py
+test_config_loader.py
+pytest を使って、config_loader の動作を検証します。
+"""
+
 import json
 import pytest
-from src.kzpy.config_loader import load_config, check_config, DEFAULT_CONFIG_PATHS
+from pathlib import Path
+from pydantic import ValidationError
+from src.kzpy.config_loader import (
+    load_device_config, check_device_config, DEFAULT_CONFIG_PATHS
+)
+from src.kzpy._type import DeviceConfig
 
-# デフォルト設定ファイルパス
-ARIES_CONFIG = DEFAULT_CONFIG_PATHS['aries']
-CRUX_CONFIG  = DEFAULT_CONFIG_PATHS['crux']
-INVALID_PATH = os.path.join(os.path.dirname(__file__), 'nonexistent.json')
-
-@pytest.fixture
-def invalid_config1(tmp_path):
-    """KeyError を引き起こす構造不正の設定ファイル"""
-    invalid_data = {
-        "device": "aries",
-        "axes_sum": 2,
-        # axes が欠落
+# テスト用サンプル設定
+def sample_config(tmp_path: Path, axes_count: int = 2) -> Path:
+    cfg = {
+        "device": "TestDev",
+        "axes_sum": axes_count,
+        "axes": [
+            {
+                "name": f"a{i}",
+                "ax_num": i,
+                "units": "um",
+                "max_pulse": 100,
+                "min_pulse": -100,
+                "max_speed_pulse": 50,
+                "start_velocity_pulse": 1.0,
+                "pulse_per_unit": 0.1,
+            }
+            for i in range(axes_count)
+        ],
+        "serial": {"baudrate": 9600, "parity": "N"},
     }
-    invalid_file = tmp_path / "invalid1.json"
-    invalid_file.write_text(json.dumps(invalid_data, indent=4), encoding="utf-8")
-    return invalid_file
+    path = tmp_path / "test.json"
+    path.write_text(json.dumps(cfg), encoding='utf-8')
+    return path
 
-@pytest.fixture
-def invalid_config2(tmp_path):
-    """TypeError を引き起こす構造不正の設定ファイル"""
-    invalid_data = {
-        "device": "aries",
-        "axes_sum": 2,
-        "axes": "not_a_list"  # axes をリストとして定義していない
-    }
-    invalid_file = tmp_path / "invalid2.json"
-    invalid_file.write_text(json.dumps(invalid_data, indent=4), encoding="utf-8")
-    return invalid_file
+# load_device_config のテスト
+def test_load_custom_config(tmp_path):
+    path = sample_config(tmp_path, axes_count=3)
+    cfg = load_device_config(path=str(path))
+    assert isinstance(cfg, DeviceConfig)
+    assert cfg.axes_sum == 3
 
+# check_device_config の正常系テスト
+def test_check_device_config_valid(tmp_path):
+    path = sample_config(tmp_path, axes_count=2)
+    valid, errors = check_device_config(path=str(path))
+    assert valid is True
+    assert errors == []
 
-def test_load_config_valid_aries():
-    """aries_config.json が正しく読み込めるか"""
-    data = load_config(path=ARIES_CONFIG)
-    assert isinstance(data, dict)
-    assert "device" in data
-    assert "axes" in data
-    assert data["device"].lower() == "aries"
+# check_device_config の異常系テスト（スキーマ不一致）
+def test_check_device_config_invalid_schema(tmp_path):
+    bad = tmp_path / 'bad.json'
+    bad.write_text(json.dumps({"foo": "bar"}), encoding='utf-8')
+    valid, errors = check_device_config(path=str(bad))
+    assert valid is False
+    assert any('device' in err for err in errors)
 
+# check_device_config の異常系テスト（ファイル未検出）
+def test_check_device_config_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setitem(DEFAULT_CONFIG_PATHS, 'aries', str(tmp_path / 'no.json'))
+    valid, errors = check_device_config(default='aries')
+    assert valid is False
+    assert any('Configuration file not found' in e for e in errors)
 
-def test_load_config_valid_crux():
-    """crux_config.json が正しく読み込めるか"""
-    data = load_config(path=CRUX_CONFIG)
-    assert isinstance(data, dict)
-    assert "device" in data
-    assert "axes" in data
-    assert data["device"].lower() == "crux"
-
-
-def test_load_config_file_not_found():
-    """存在しないファイルを読んだときに FileNotFoundError が出るか"""
-    with pytest.raises(FileNotFoundError):
-        load_config(path=INVALID_PATH)
-
-
-def test_check_config_valid_aries():
-    """aries_config.json が正しくチェックできるか"""
-    data = check_config(path=ARIES_CONFIG)
-    assert data["device"].lower() == "aries"
-    assert len(data["axes"]) == data["axes_sum"]
-
-
-def test_check_config_valid_crux():
-    """crux_config.json が正しくチェックできるか"""
-    data = check_config(path=CRUX_CONFIG)
-    assert data["device"].lower() == "crux"
-    assert len(data["axes"]) == data["axes_sum"]
-
-
-def test_check_config_invalid_key(invalid_config1):
-    """必須キーが不足している場合に KeyError が発生するか"""
-    with pytest.raises(KeyError):
-        check_config(path=str(invalid_config1))
-
-
-def test_check_config_invalid_type(invalid_config2):
-    """axes がリストでない場合に TypeError が発生するか"""
-    with pytest.raises(TypeError):
-        check_config(path=str(invalid_config2))
+# load_device_config の異常系テスト
+def test_load_invalid_schema(tmp_path):
+    bad = tmp_path / 'bad.json'
+    bad.write_text(json.dumps({"foo": "bar"}), encoding='utf-8')
+    with pytest.raises(ValidationError):
+        load_device_config(path=str(bad))

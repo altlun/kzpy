@@ -72,5 +72,9 @@
         "start_velocity_pulse": 0.5,
         "pulse_per_unit": 0.001063
     }
-  ]
+  ],
+  "serial":{
+    "baudrate": 115200,
+    "parity": "N"
+  }
 }
