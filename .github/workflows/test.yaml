@@ -25,5 +25,5 @@ jobs:
 
       - name: Set PYTHONPATH and run tests
         run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)/src  # srcフォルダをPYTHONPATHに追加
-          pytest
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+          pytest tests
