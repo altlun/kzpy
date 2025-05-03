@@ -8,152 +8,177 @@ src/kzpy/_command.py
 from typing import Dict, Any
 
 # デフォルトコマンドマップ
-default_map = {
+default_map: Dict[str, Any] = {
     "move_free": {
         "code": "FRP",
         "args": ["ax_num", "vel_no", "dir"],
         "res_c": ["ax_num"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "move_relative": {
         "code": "RPS",
         "args": ["ax_num", "vel_no", "length", "pat"],
         "res_c": ["ax_num"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "move_absolute": {
         "code": "APS",
         "args": ["ax_num", "vel_no", "length", "pat"],
         "res_c": ["ax_num"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "move_stop": {
         "code": "STP",
         "args": ["ax_num", "pat"],
         "res_c": ["ax_num"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "home": {
         "code": "ORG",
         "args": ["ax_num", "vel_no", "pat"],
         "res_c": ["ax_num"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "identify": {
         "code": "IDN",
         "args": [],
-        "res_c": ["dev_name", "dev_var"],
-        "res_e": []
+        "res_c": ["dev_name", "dev_var", "minor_ver", "release_ver"],
+        "res_e": [],
     },
     "read_position": {
         "code": "RDP",
         "args": ["ax_num"],
         "res_c": ["ax_num", "pos"],
-        "res_e": []
+        "res_e": [],
     },
     "read_vel_tbl": {
         "code": "RTB",
         "args": ["ax_num", "vel_no"],
         "res_c": ["ax_num", "vel_no", "start_vel", "max_vel", "acc_time", "acc_type"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "read_status": {
         "code": "STR",
         "args": ["ax_num"],
         "res_c": ["ax_num", "status", "org_sta", "norg_sta", "ccw_sta", "cw_sta"],
-        "res_e": ["error_num"]
+        "res_e": ["ax_num", "error_num"],
     },
     "write_vel_tbl": {
         "code": "WTB",
         "args": ["ax_num", "vel_no", "start_vel", "max_vel", "acc_time", "acc_type"],
         "res_c": ["ax_num"],
-        "res_e": ["error_num"]
-    }
+        "res_e": ["ax_num", "error_num"],
+    },
 }
 
-# ARIESバリアント用にデフォルトマップを拡張
-aries_command_map = {
+# ARIESバリアント用のコマンドマップ（read_vel_tblやwrite_vel_tblが拡張されている）
+aries_command_map: Dict[str, Any] = {
     **default_map,
     "read_axis": {
         "code": "RAX",
         "args": [],
         "res_c": ["ax_num", "control_num"] + [f"island_{i}" for i in range(8)],
-        "res_e": ["error_num"]
-    }
+        "res_e": ["error_num"],
+    },
+    "read_vel_tbl": {
+        "code": "RTB",
+        "args": default_map["read_vel_tbl"]["args"],
+        "res_c": ["ax_num", "vel_no", "start_vel", "max_vel", "acc_time", "dec_time", "acc_type", "acc_pulse", "dec_pulse"],
+        "res_e": ["ax_num", "error_num"],
+    },
+    "write_vel_tbl": {
+        "code": "WTB",
+        "args": ["ax_num", "vel_no", "start_vel", "max_vel", "acc_time", "dec_time", "acc_type"],
+        "res_c": ["ax_num", "vel_no", "start_vel", "max_vel", "acc_time", "dec_time", "acc_type", "acc_pulse", "dec_pulse"],
+        "res_e": ["ax_num", "error_num"],
+    },
 }
 
 class CommandProcessor:
-    STX = b"\x02"  # スタートビット
-    CRLF = b"\r\n"  # 終了ビット
+    # 開始・終了文字
+    STX = b"\x02"
+    CRLF = b"\r\n"
 
     def __init__(self, variant: str = "default"):
-        # variantに応じたコマンドマップを選択
-        if variant == "aries":
-            self.cmd_map = aries_command_map
-        else:
-            self.cmd_map = default_map
+        # コマンドセットのバリアント（"default" または "aries"）
+        self.variant = variant
+        self.cmd_map = aries_command_map if variant == "aries" else default_map
 
     def generate_command(self, command_name: str, **kwargs) -> bytes:
         """
-        コマンドを生成して、送信可能なバイト列に整形する。
+        コマンド名と引数から、バイナリ形式の送信用コマンドを生成する
         """
-        cmd_info = self.cmd_map.get(command_name)
-        if not cmd_info:
+        info = self.cmd_map.get(command_name)
+        if not info:
             raise ValueError(f"Invalid command: {command_name}")
 
-        # 必要引数のチェック
-        args = []
-        for arg in cmd_info.get("args", []):
-            if arg not in kwargs:
-                raise ValueError(f"Missing required argument: {arg}")
-            args.append(str(kwargs[arg]))
+        code = info["code"]
 
-        # コマンド文字列の組み立て
-        if args:
-            # code + first arg, 以降はスラッシュ区切り
-            body = cmd_info["code"] + args[0]
-            for extra in args[1:]:
+        # 定義された引数の中で、実際に渡されたものだけを抽出
+        filtered_args = [arg for arg in info.get("args", []) if arg in kwargs]
+        args_strs = [str(kwargs[arg]) for arg in filtered_args]
+
+        # コマンドボディを組み立て（スラッシュ区切り）
+        body = code
+        if args_strs:
+            body += args_strs[0]
+            for extra in args_strs[1:]:
                 body += f"/{extra}"
-        else:
-            # 引数なしコマンド
-            body = cmd_info["code"]
 
-        # STX + body + CRLF
-        return CommandProcessor.STX + body.encode('ascii') + CommandProcessor.CRLF
+        # STX + コマンド + CRLF の形式でバイト列化
+        raw = CommandProcessor.STX + body.encode('ascii') + CommandProcessor.CRLF
+        print(f"[DEBUG] → raw command: {raw!r}")
+        return raw
 
     def parse_response(self, response: str, command: str) -> Dict[str, Any]:
         """
-        コマンドに基づいたレスポンス文字列をパースし、結果を辞書で返す。
+        デバイスからのレスポンスを解析し、フィールド名をキーとした辞書を返す。
+        エラー応答の場合は RuntimeError を発生させる。
         """
-        cmd_info = self.cmd_map.get(command)
-        if not cmd_info:
+        info = self.cmd_map.get(command)
+        if not info:
             raise ValueError(f"Unknown command: {command}")
 
-        parts = response.split()
-        result: Dict[str, Any] = {}
+        # タブをスペースに変換し、トークンに分割
+        tokens = response.strip().replace('\t', ' ').split()
+        if not tokens:
+            raise ValueError("Empty response")
 
-        prefix = parts[0]
-        if prefix == "C":  # 正常応答
-            expected = cmd_info.get("res_c", [])
-            for i in range(1, len(parts), 2):
-                key, val = parts[i], parts[i+1]
-                if key in expected:
-                    result[key] = val
-                else:
-                    raise ValueError(f"Unexpected key in success response: {key}")
-        elif prefix == "E":  # エラー応答
-            expected = cmd_info.get("res_e", [])
-            if len(parts) < 3:
-                raise ValueError("Invalid error response format")
-            # error_numは必須
-            result["error_num"] = parts[2]
-            for i in range(3, len(parts), 2):
-                key, val = parts[i], parts[i+1]
-                if key in expected:
-                    result[key] = val
-                else:
-                    raise ValueError(f"Unexpected key in error response: {key}")
-        else:
-            raise ValueError("Invalid response prefix")
+        prefix = tokens.pop(0)  # "C"（成功）または "E"（エラー）
+        code = info["code"]
+
+        # 先頭にコマンドコードが含まれていれば処理
+        if tokens:
+            first = tokens[0]
+            if first == code:
+                tokens.pop(0)
+            elif first.startswith(code) and first[len(code):].isdigit():
+                tokens.pop(0)
+                tokens.insert(0, first[len(code):])
+
+        # 成功応答またはエラー応答に応じて期待フィールドを選択
+        fields = info["res_c"] if prefix == "C" else info["res_e"]
+
+        # read_vel_tbl のみ default_map のフォールバック対応
+        if len(tokens) != len(fields) and command == "read_vel_tbl":
+            fallback = default_map.get(command)
+            alt_fields = (fallback["res_c"] if prefix == "C" else fallback["res_e"]) if fallback else []
+            if len(tokens) == len(alt_fields):
+                fields = alt_fields
+
+        if len(tokens) != len(fields):
+            kind = "Success" if prefix == "C" else "Error"
+            raise ValueError(
+                f"{kind} response length mismatch: expected {len(fields)} values, got {len(tokens)}\n"
+                f"→ fields: {fields}\n→ tokens: {tokens}"
+            )
+
+        result = dict(zip(fields, tokens))
+
+        # エラー応答の場合は例外送出
+        if prefix == "E":
+            ax_info = f"Axis {result.get('ax_num')}" if "ax_num" in result else "Unknown axis"
+            err_info = f"Error {result.get('error_num')}" if "error_num" in result else "Unknown error"
+            raise RuntimeError(f"Command '{command}' failed during execution ({ax_info}, {err_info})")
 
         return result
