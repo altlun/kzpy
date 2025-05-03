@@ -19,3 +19,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "kzpy" = ["config/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
