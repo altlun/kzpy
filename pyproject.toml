@@ -1,16 +1,18 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "kzpy"
-version = "0.1.0"
+version = "0.2.16"
 description = "khozu device manager"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "pydantic==2.11.3",
+  "pyserial==3.5",
+]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = [
+  "pytest==8.3.5",
+  "auto_mix_prep==0.2.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
