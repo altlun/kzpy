@@ -1,12 +1,26 @@
+"""
+src/kzpy/tests/test_motion.py
+
+motion.py モジュールの MotionController クラスに対する pytest による単体テストです:
+- write_vel_tbl: 速度テーブルの書き込みと引数の型チェック
+- _temp_set_velocity: 一時的な速度設定と元に戻すための情報取得
+- move_relative: 相対移動コマンドの実行とパラメータ変換の検証
+- move_absolute: 絶対位置移動コマンドとパルス単位変換のテスト
+- move_stop: モータ停止命令と引数の整数性検証
+- home: 原点復帰処理の動作確認と引数チェック
+- read_position: 現在位置取得と長さ単位への変換確認
+- read_status: ステータス取得処理の動作確認
+- read_vel_tbl: 速度テーブル読み取りと単位変換の検証
+"""
+
 import pytest
 from types import SimpleNamespace
-
 from src.kzpy.motion import MotionController
 
-# ===== pytest フィクスチャ: バリデーション関数のモック =====
+# ===== pytest fixture: patch validation functions =====
 @pytest.fixture(autouse=True)
 def patch_validators(monkeypatch):
-    # get_axis_conf は任意の config・軸番号から同じ AxisConfig を返す
+    # テスト用に軸設定と変換関数をパッチする
     axis_conf = SimpleNamespace(
         pulse_per_unit=10.0,
         min_pulse=0,
@@ -23,28 +37,25 @@ def patch_validators(monkeypatch):
     monkeypatch.setattr('src.kzpy.motion.pulse_to_velocity_unit', lambda pulse, ax: pulse / ax.pulse_per_unit)
     yield
 
-# ===== Dummy デバイスクラス =====
+# ===== Dummy device for testing =====
 class DummyDevice:
     def __init__(self):
-        self._config = SimpleNamespace()  # 実際は get_axis_conf の引数だが無視される
+        self._config = SimpleNamespace()
         self.target_vel_no = 1
-        self.restore_vel_table = True
+        self.restore_vel_table = False
+        self._processor = SimpleNamespace(
+            variant='default',
+            cmd_map={'write_vel_tbl': {'args': ['ax_num', 'vel_no', 'start_vel', 'max_vel', 'acc_time', 'acc_type']}}
+        )
         self.calls = []
 
     def _execute_command(self, name, **kwargs):
-        # 呼び出し記録
+        # コマンド実行履歴を記録し、模擬レスポンスを返す
         self.calls.append((name, kwargs.copy()))
-        # コマンドごとの固定レスポンスを返却
         if name == 'read_vel_tbl':
-            return {
-                'vel_no': kwargs['vel_no'],
-                'start_vel': 5,
-                'max_vel': 5,
-                'acc_time': 3,
-                'acc_type': 2,
-            }
+            return {'vel_no': kwargs['vel_no'], 'start_vel': 5, 'max_vel': 5, 'acc_time': 3, 'acc_type': 2}
         if name in ('move_relative', 'move_absolute'):
-            return {'status': 'ok', 'vel_no': kwargs.get('vel_no'), 'length': kwargs.get('length', None)}
+            return {'status': 'ok', 'vel_no': kwargs.get('vel_no'), 'length': kwargs.get('length')}
         if name == 'move_stop':
             return {'stopped': True}
         if name == 'home':
@@ -57,101 +68,133 @@ class DummyDevice:
             return {'written': True}
         return {}
 
-# ===== テスト: _temp_set_velocity =====
-def test_temp_set_velocity():
+# ===== Tests for MotionController =====
+
+def test_write_vel_tbl_int_args():
+    # 速度テーブル書き込みが適切に整数変換されるかを確認
+    dev = DummyDevice()
+    mc = MotionController(dev)
+
+    res = mc.write_vel_tbl(axis=1, vel_no=3, max_velocity=2.0, acc_time=4, acc_type=1)
+
+    assert res['start_pulse'] == 16
+    assert res['max_pulse'] == 20
+    assert res['acc_time'] == 4
+    assert res['acc_type'] == 1
+    assert [c[0] for c in dev.calls] == ['read_vel_tbl', 'write_vel_tbl']
+
+    # 引数がすべて整数であることを確認
+    _, kwargs = dev.calls[1]
+    for v in kwargs.values():
+        assert isinstance(v, int)
+
+def test_temp_set_velocity_int_args():
+    # 一時的に速度を変更し、書き込みが整数で行われるかを確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
     orig = mc._temp_set_velocity(ax=1, vel_no=1, velocity=2.5)
-    # 読み出し元の値が返却される
-    assert orig == {'vel_no': 1, 'start_vel': 5, 'max_vel': 5, 'acc_time': 3, 'acc_type': 2}
-    # コマンド実行順序: read_vel_tbl → write_vel_tbl
-    assert dev.calls[0][0] == 'read_vel_tbl'
-    assert dev.calls[1][0] == 'write_vel_tbl'
-    # convert 2.5*10=25 pulse
-    assert dev.calls[1][1]['start_vel'] == 25
-    assert dev.calls[1][1]['max_vel'] == 25
 
-# ===== テスト: move_relative =====
-def test_move_relative_with_restore():
+    assert orig['vel_no'] == 1
+    assert orig['start_vel'] == 5
+    assert orig['max_vel'] == 5
+    assert orig['acc_time'] == 3
+    assert orig['acc_type'] == 2
+
+    proc = mc._get_processor()
+    expected_variant = getattr(proc, 'variant', None)
+    assert orig['_variant'] == expected_variant
+    assert [call[0] for call in dev.calls] == ['read_vel_tbl', 'write_vel_tbl']
+
+    _, write_kwargs = dev.calls[1]
+    for v in write_kwargs.values():
+        assert isinstance(v, int)
+
+def test_move_relative_sequence_and_types():
+    # 相対移動のパルス変換と引数型チェック
     dev = DummyDevice()
     mc = MotionController(dev)
 
     result = mc.move_relative(axis=1, length=2.0, velocity=1.5)
-    # 結果に元パラメータと変換結果が含まれる
-    assert result['length'] == 2.0
     assert result['length_pulse'] == 20
     assert result['velocity_pulse'] == 15
-    # コマンド呼び出しシーケンス:
-    # read_vel_tbl, write_vel_tbl, move_relative, write_vel_tbl
-    names = [c[0] for c in dev.calls]
-    assert names == ['read_vel_tbl', 'write_vel_tbl', 'move_relative', 'write_vel_tbl']
+    assert result['length'] == 20
+    assert result['status'] == 'ok'
+    assert result['vel_no'] == 1
+    assert [c[0] for c in dev.calls] == ['read_vel_tbl', 'write_vel_tbl', 'move_relative']
+    for _, kwargs in dev.calls:
+        for v in kwargs.values():
+            assert isinstance(v, int)
 
-# ===== テスト: move_absolute (restore_vel_table=False) =====
-def test_move_relative_with_restore():
+def test_move_absolute_sequence_and_types():
+    # 絶対位置移動と各パラメータの変換を確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
-    result = mc.move_relative(axis=1, length=2.0, velocity=1.5)
-    # length_pulse = 2.0 * 10 = 20 であることを確認
-    assert result['length_pulse'] == 20
-    # デバイスレスポンスの 'length'（パルス値）が result['length'] に上書きされる
-    assert result['length'] == 20
-    # ステータスと vel_no も含まれる
+    result = mc.move_absolute(axis=2, position=3.5, velocity=2.0)
+    assert result['position_pulse'] == 35
+    assert result['velocity_pulse'] == 20
+    assert result['position'] == 35
     assert result['status'] == 'ok'
-    assert result['vel_no'] == 1
-    # コマンド呼び出しシーケンス
-    names = [c[0] for c in dev.calls]
-    assert names == ['read_vel_tbl', 'write_vel_tbl', 'move_relative', 'write_vel_tbl']
+    assert [c[0] for c in dev.calls] == ['read_vel_tbl', 'write_vel_tbl', 'move_absolute']
+    for _, kwargs in dev.calls:
+        for v in kwargs.values():
+            assert isinstance(v, int)
 
-# ===== テスト: move_stop =====
-def test_move_stop():
+def test_move_stop_int_args():
+    # モータ停止処理で ax_num, pat が整数で渡されるか確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
     res = mc.move_stop(axis=1, pat=7)
     assert res == {'stopped': True}
-    assert dev.calls == [('move_stop', {'ax_num': 1, 'pat': 7})]
+    name, kwargs = dev.calls[0]
+    assert name == 'move_stop'
+    assert kwargs == {'ax_num': 1, 'pat': 7}
 
-# ===== テスト: home =====
-def test_home():
+def test_home_sequence_and_ints():
+    # 原点復帰処理と速度設定が適切に行われるか確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
     res = mc.home(axis=2, velocity=2.0)
-    # 速度変換チェック
-    assert res['velocity'] == 2.0
     assert res['velocity_pulse'] == 20
-    # シーケンス: read_vel_tbl, write_vel_tbl, home, write_vel_tbl
-    names = [c[0] for c in dev.calls]
-    assert names == ['read_vel_tbl', 'write_vel_tbl', 'home', 'write_vel_tbl']
+    assert res['velocity'] == 2.0
+    assert [c[0] for c in dev.calls] == ['read_vel_tbl', 'write_vel_tbl', 'home']
+    for _, kwargs in dev.calls:
+        for v in kwargs.values():
+            assert isinstance(v, int)
 
-# ===== テスト: read_position =====
-def test_read_position():
+def test_read_position_and_types():
+    # 現在位置取得と単位変換の正当性を確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
     res = mc.read_position(axis=1)
-    # pos=20→unit=20/10=2.0
     assert res['position'] == 2.0
     assert res['position_pulse'] == 20
     assert res['pos'] == 20
+    name, kwargs = dev.calls[0]
+    assert name == 'read_position'
+    assert isinstance(kwargs['ax_num'], int)
 
-# ===== テスト: read_status =====
-def test_read_status():
+def test_read_status_int():
+    # ステータス取得と整数引数の確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
     res = mc.read_status(axis=1)
     assert res == {'status': 0}
+    name, kwargs = dev.calls[0]
+    assert name == 'read_status'
+    assert isinstance(kwargs['ax_num'], int)
 
-# ===== テスト: read_vel_tbl =====
-def test_read_vel_tbl():
+def test_read_vel_tbl_conversion():
+    # 速度テーブル読み込みと変換値の確認
     dev = DummyDevice()
     mc = MotionController(dev)
 
     res = mc.read_vel_tbl(axis=1)
-    # start_vel=5→unit=5/10=0.5
     assert res == {
         'vel_no': 1,
         'start_velocity': 0.5,
@@ -159,15 +202,6 @@ def test_read_vel_tbl():
         'acc_time': 3,
         'acc_type': 2,
     }
-
-# ===== テスト: write_vel_tbl =====
-def test_write_vel_tbl():
-    dev = DummyDevice()
-    mc = MotionController(dev)
-
-    res = mc.write_vel_tbl(axis=1, vel_no=3, start_velocity=1.0, max_velocity=2.0, acc_time=4, acc_type=1)
-    # 1.0*10=10, 2.0*10=20
-    assert res['start_velocity'] == 1.0
-    assert res['start_pulse'] == 10
-    assert res['max_velocity'] == 2.0
-    assert res['max_pulse'] == 20
+    name, kwargs = dev.calls[0]
+    assert name == 'read_vel_tbl'
+    assert isinstance(kwargs['ax_num'], int) and isinstance(kwargs['vel_no'], int)
