@@ -92,6 +92,12 @@ aries_command_map: Dict[str, Any] = {
         "res_c": ["ax_num", "vel_no", "start_vel", "max_vel", "acc_time", "dec_time", "acc_type", "acc_pulse", "dec_pulse"],
         "res_e": ["ax_num", "error_num"],
     },
+    "read_status": {
+        "code": "STR",
+        "args": ["ax_num"],
+        "res_c": ["ax_num", "status", "emg_sta", "org_noorg_sta", "cw_ccw_sta", "soft_sta","limit_sta"],
+        "res_e": ["ax_num", "error_num"],
+    },
 }
 
 class CommandProcessor:
