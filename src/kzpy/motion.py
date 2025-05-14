@@ -18,6 +18,7 @@ from .validate import (
     validate_acc_type,
 )
 from .device import Device
+from ._type import DeviceConfig
 import functools
 import time
 
@@ -39,19 +40,37 @@ def log_io(temp_methods: Optional[tuple] = None) -> Callable:
         return wrapper
     return decorator
 
+
 class MotionController:
     def __init__(self, device: Device):
-        """デバイスインスタンスを受け取り、構成情報を保持
-        起動時に全軸のvel_no=0をデフォルト値で初期化"""
+        """
+        デバイスインスタンスを受け取り、構成情報を保持
+        Pydantic の DeviceConfig 型を想定し、axes リストから
+        起動時に全軸の vel_no=0 をデフォルトで初期化
+        """
         self._dev = device
-        self._cfg = device._config
-        # 全ての軸に対し、速度テーブル0をデフォルト値で初期化
-        for ax_conf in self._cfg.get('axes', {}).keys():
+        cfg = device._config
+        # 辞書として渡された場合は DeviceConfig にパース
+        if not isinstance(cfg, DeviceConfig):
+            cfg = DeviceConfig(**cfg)
+        self._cfg: DeviceConfig = cfg
+
+        # 各軸を初期化
+        for axis_conf in self._cfg.axes:
+            axis_num = axis_conf.ax_num
             try:
-                self.write_vel_tbl(axis=ax_conf, vel_no=0,
-                    max_velocity=1000, acc_time=16, dec_time=16, acc_type=2)
+                # write_vel_tbl は内部で単位変換を行うため float/int 混在可
+                self.write_vel_tbl(
+                    axis=axis_num,
+                    vel_no=0,
+                    max_velocity=1000,
+                    acc_time=16,
+                    dec_time=16,
+                    acc_type=2
+                )
             except Exception as e:
-                print(f"[WARN] axis {ax_conf} default vel table init failed: {e}")
+                print(f"[WARN] axis {axis_num} default vel table init failed: {e}")
+
 
     def _exec_int(self, name: str, **kwargs) -> Dict[str, Any]:
         """キーワード引数を整数に変換し、コマンドを実行。送受信を print でログ出力"""
