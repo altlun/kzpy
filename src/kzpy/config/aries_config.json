@@ -8,7 +8,7 @@
         "units":"um",
         "max_pulse": 20000,
         "min_pulse":-20000,
-        "max_speed_pulse": 20000,
+        "max_speed_pulse": 10000,
         "start_velocity_pulse": 0.5,
         "pulse_per_unit": 0.125
     },
@@ -18,7 +18,7 @@
         "units":"um",
         "max_pulse": 150000,
         "min_pulse":-150000,
-        "max_speed_pulse": 40000,
+        "max_speed_pulse": 10000,
         "start_velocity_pulse": 0.5,
         "pulse_per_unit": 0.02
     },
@@ -28,7 +28,7 @@
         "units":"um",
         "max_pulse": 150000,
         "min_pulse":-150000,
-        "max_speed_pulse": 40000,
+        "max_speed_pulse": 10000,
         "start_velocity_pulse": 0.5,
         "pulse_per_unit": 0.02
     },
@@ -48,7 +48,7 @@
         "units":"um",
         "max_pulse": 20000,
         "min_pulse":-20000,
-        "max_speed_pulse": 20000,
+        "max_speed_pulse": 10000,
         "start_velocity_pulse": 0.5,
         "pulse_per_unit": 0.125
     },
@@ -68,7 +68,7 @@
         "units":"deg",
         "max_pulse": 4703,
         "min_pulse":-4703,
-        "max_speed_pulse": 15000,
+        "max_speed_pulse": 15051,
         "start_velocity_pulse": 0.5,
         "pulse_per_unit": 0.001063
     }
