@@ -5,8 +5,7 @@ config/*.json から設定を読み込み、DeviceConfig モデルを元にシ�
 - デバイスの自動検出や接続確認、コマンド送信・受信処理を提供
 """
 
-from typing import Dict, Any, Optional
-
+from typing import Dict, Any, Optional, Callable
 from .validate import (
     get_axis_conf,
     length_unit_to_pulse,
@@ -18,6 +17,24 @@ from .validate import (
     validate_acc_type,
 )
 from .device import Device
+import functools
+
+def log_io(temp_methods: Optional[tuple] = None) -> Callable:
+    """
+    各メソッドの呼び出し前後に print するデコレーター。
+    temp_methods に含まれるメソッドは temp_change=True として表示。
+    """
+    temp_methods = temp_methods or ()
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            is_temp = func.__name__ in temp_methods
+            print(f"[CALL] {func.__name__}  args={args}, kwargs={kwargs}, temp_change={is_temp}")
+            result = func(self, *args, **kwargs)
+            print(f"[RETURN] {func.__name__} → {result}")
+            return result
+        return wrapper
+    return decorator
 
 
 class MotionController:
@@ -27,8 +44,12 @@ class MotionController:
         self._cfg = device._config
 
     def _exec_int(self, name: str, **kwargs) -> Dict[str, Any]:
-        """キーワード引数を整数に変換し、コマンドを実行"""
-        return self._dev._execute_command(name, **{k: int(v) for k, v in kwargs.items()})
+        """キーワード引数を整数に変換し、コマンドを実行。送受信を print でログ出力"""
+        send_args = {k: int(v) for k, v in kwargs.items()}
+        print(f"[CMD SEND] {name} {send_args}")
+        resp = self._dev._execute_command(name, **send_args)
+        print(f"[CMD RECV] {name} → {resp}")
+        return resp
 
     def _get_processor(self):
         """コマンドプロセッサを取得（variantなどにアクセスする用途）"""
@@ -84,9 +105,10 @@ class MotionController:
 
         args_list = proc.cmd_map['write_vel_tbl']['args']
         restore_args = {arg: int(orig[arg]) for arg in args_list if arg in orig}
-        print(f"[DEBUG] Restoring write_vel_tbl with variant={getattr(proc, 'variant', None)}, args={restore_args}")
+        print(f"[DEBUG] Restoring write_vel_tbl variant={getattr(proc, 'variant', None)}, args={restore_args}")
         self._exec_int('write_vel_tbl', **restore_args)
 
+    @log_io(temp_methods=('move_relative', 'move_absolute', 'home'))
     def move_relative(self, axis: int, length: float, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
         """相対移動を実行する"""
         ax_conf = get_axis_conf(self._cfg, axis)
@@ -107,6 +129,7 @@ class MotionController:
             **resp
         }
 
+    @log_io(temp_methods=('move_relative', 'move_absolute', 'home'))
     def move_absolute(self, axis: int, position: float, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
         """絶対移動を実行する"""
         ax_conf = get_axis_conf(self._cfg, axis)
@@ -127,10 +150,7 @@ class MotionController:
             **resp
         }
 
-    def move_stop(self, axis: int, pat: int = 1) -> Dict[str, Any]:
-        """現在の動作を停止させる"""
-        return self._exec_int('move_stop', ax_num=axis, pat=pat)
-
+    @log_io(temp_methods=('move_relative', 'move_absolute', 'home'))
     def home(self, axis: int, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
         """原点復帰動作を行う"""
         ax_conf = get_axis_conf(self._cfg, axis)
@@ -145,6 +165,12 @@ class MotionController:
 
         return {'velocity': velocity, 'velocity_pulse': pulse_vel, **resp}
 
+    @log_io()
+    def move_stop(self, axis: int, pat: int = 1) -> Dict[str, Any]:
+        """現在の動作を停止させる"""
+        return self._exec_int('move_stop', ax_num=axis, pat=pat)
+
+    @log_io()
     def read_position(self, axis: int) -> Dict[str, Any]:
         """現在位置を取得する"""
         ax_conf = get_axis_conf(self._cfg, axis)
@@ -153,10 +179,12 @@ class MotionController:
         unit = pulse_to_length_unit(pulse, ax_conf)
         return {'position': unit, 'position_pulse': pulse, **resp}
 
+    @log_io()
     def read_status(self, axis: int) -> Dict[str, Any]:
         """現在のステータスを取得する（モーション中かなど）"""
         return self._exec_int('read_status', ax_num=axis)
 
+    @log_io()
     def read_vel_tbl(self, axis: int, vel_no: Optional[int] = None) -> Dict[str, Any]:
         """速度テーブルの情報を取得する"""
         table_no = vel_no or self._dev.target_vel_no
@@ -171,6 +199,7 @@ class MotionController:
             'acc_type': int(resp.get('acc_type', 0)),
         }
 
+    @log_io()
     def write_vel_tbl(
         self,
         axis: int,
@@ -192,20 +221,16 @@ class MotionController:
         scale = self._get_vel_table_scaling(orig, max_p)
 
         acc_time_val = validate_acc_time(acc_time or int(float(orig.get('acc_time', 1)) * scale), ax_conf)
-
         dec_time_val = (
             validate_dec_time(dec_time or int(float(orig.get('dec_time', acc_time_val)) * scale), ax_conf)
-            if 'dec_time' in proc.cmd_map['write_vel_tbl']['args']
-            else None
+            if 'dec_time' in proc.cmd_map['write_vel_tbl']['args'] else None
         )
-
         acc_type_val = (
             validate_acc_type(acc_type if acc_type is not None else 1, variant)
-            if 'acc_type' in proc.cmd_map['write_vel_tbl']['args']
-            else None
+            if 'acc_type' in proc.cmd_map['write_vel_tbl']['args'] else None
         )
 
-        debug_parts = [f"start: {start_p} (0.8×max)", f"max: {max_p}", f"acc_time: {acc_time_val}"]
+        debug_parts = [f"start: {start_p}", f"max: {max_p}", f"acc_time: {acc_time_val}"]
         if dec_time_val is not None:
             debug_parts.append(f"dec_time: {dec_time_val}")
         if acc_type_val is not None:
