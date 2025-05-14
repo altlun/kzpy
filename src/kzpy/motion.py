@@ -18,6 +18,7 @@ from .validate import (
 )
 from .device import Device
 import functools
+import time
 
 def log_io(temp_methods: Optional[tuple] = None) -> Callable:
     """
@@ -50,6 +51,17 @@ class MotionController:
         resp = self._dev._execute_command(name, **send_args)
         print(f"[CMD RECV] {name} → {resp}")
         return resp
+    
+    def ensure_idle(self, axis: int, poll_interval: float = 0.1):
+        """
+        コマンド実行前後に呼び出して、デバイスがアイドル状態 (status=="0") になるまで待機
+        """
+        while True:
+            sta = self.read_status(axis=axis)
+            if sta.get('status') == '0':
+                break
+            print(f"[ENSURE_IDLE] waiting, status={sta.get('status')}")
+            time.sleep(poll_interval)
 
     def _get_processor(self):
         """コマンドプロセッサを取得（variantなどにアクセスする用途）"""
@@ -108,40 +120,71 @@ class MotionController:
         print(f"[DEBUG] Restoring write_vel_tbl variant={getattr(proc, 'variant', None)}, args={restore_args}")
         self._exec_int('write_vel_tbl', **restore_args)
 
-    @log_io(temp_methods=('move_relative', 'move_absolute', 'home'))
+    @log_io(temp_methods=('move_relative_sync','move_absolute_sync','home_sync'))
     def move_relative(self, axis: int, length: float, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """相対移動を実行する"""
+        """相対移動を実行（非同期）"""
+        # 短絡的には同期版を呼び出す
+        return self.move_relative_sync(axis, length, velocity, vel_no)
+
+    def move_relative_sync(
+        self, axis: int, length: float, velocity: float,
+        vel_no: Optional[int] = None, buffer: float = 0.2
+    ) -> Dict[str, Any]:
+        """
+        相対移動を実行し、
+        - 実行前にアイドル待ち
+        - コマンド送信
+        - 期待所要時間(length/velocity)+buffer だけ sleep
+        - 完了確認
+        """
+        # 1) 実行前 idle 確認
+        self.ensure_idle(axis)
         ax_conf = get_axis_conf(self._cfg, axis)
         pulse_len = length_unit_to_pulse(length, ax_conf)
         table_no = vel_no or self._dev.target_vel_no
-
+        # 2) 一時速度変更
         orig = self._temp_set_velocity(axis, table_no, velocity) if table_no else None
+        # 3) 移動コマンド
         resp = self._exec_int('move_relative', ax_num=axis, vel_no=table_no, length=pulse_len, pat=1)
-
+        # 4) 待機時間計算
+        wait_time = (length / velocity) + buffer
+        print(f"[WAIT] move_relative sleeping {wait_time:.2f}s")
+        time.sleep(wait_time)
+        # 5) 完了確認
+        self.ensure_idle(axis)
+        # 6) テーブル復帰
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
-
+        # 7) 結果整形
         return {
-            'length': resp.get('length'),
             'length_pulse': pulse_len,
             'velocity': velocity,
             'velocity_pulse': self._convert_velocity_to_pulses(velocity, ax_conf),
             **resp
         }
 
-    @log_io(temp_methods=('move_relative', 'move_absolute', 'home'))
+    @log_io(temp_methods=('move_relative_sync','move_absolute_sync','home_sync'))
     def move_absolute(self, axis: int, position: float, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """絶対移動を実行する"""
+        """絶対移動を実行（非同期）"""
+        return self.move_absolute_sync(axis, position, velocity, vel_no)
+
+    def move_absolute_sync(
+        self, axis: int, position: float, velocity: float,
+        vel_no: Optional[int] = None, buffer: float = 0.2
+    ) -> Dict[str, Any]:
+        # 1) idle 待ち
+        self.ensure_idle(axis)
         ax_conf = get_axis_conf(self._cfg, axis)
         pulse_pos = length_unit_to_pulse(position, ax_conf)
         table_no = vel_no or self._dev.target_vel_no
-
         orig = self._temp_set_velocity(axis, table_no, velocity) if table_no else None
         resp = self._exec_int('move_absolute', ax_num=axis, vel_no=table_no, length=pulse_pos, pat=1)
-
+        wait_time = (position / velocity) + buffer
+        print(f"[WAIT] move_absolute sleeping {wait_time:.2f}s")
+        time.sleep(wait_time)
+        self.ensure_idle(axis)
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
-
         return {
             'position': resp.get('length'),
             'position_pulse': pulse_pos,
@@ -150,20 +193,31 @@ class MotionController:
             **resp
         }
 
-    @log_io(temp_methods=('move_relative', 'move_absolute', 'home'))
+    @log_io(temp_methods=('move_relative_sync','move_absolute_sync','home_sync'))
     def home(self, axis: int, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """原点復帰動作を行う"""
+        """原点復帰動作を実行（非同期）"""
+        return self.home_sync(axis, velocity, vel_no)
+
+    def home_sync(self, axis: int, velocity: float, vel_no: Optional[int] = None, buffer: float = 0.2) -> Dict[str, Any]:
+        # 1) idle 待ち
+        self.ensure_idle(axis)
         ax_conf = get_axis_conf(self._cfg, axis)
         pulse_vel = self._convert_velocity_to_pulses(velocity, ax_conf)
         table_no = vel_no or self._dev.target_vel_no
-
         orig = self._temp_set_velocity(axis, table_no, velocity) if table_no else None
         resp = self._exec_int('home', ax_num=axis, vel_no=table_no, pat=1)
-
+        # 原点復帰距離不明のため速度のみで待機
+        wait_time = (1.0) + buffer  # 経験的所要時間 + buffer
+        print(f"[WAIT] home sleeping {wait_time:.2f}s")
+        time.sleep(wait_time)
+        self.ensure_idle(axis)
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
-
-        return {'velocity': velocity, 'velocity_pulse': pulse_vel, **resp}
+        return {
+            'velocity': velocity,
+            'velocity_pulse': pulse_vel,
+            **resp
+        }
 
     @log_io()
     def move_stop(self, axis: int, pat: int = 1) -> Dict[str, Any]:

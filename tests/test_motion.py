@@ -36,6 +36,16 @@ def patch_validators(monkeypatch):
     monkeypatch.setattr('src.kzpy.motion.velocity_unit_to_pulse', lambda vel, ax: int(vel * ax.pulse_per_unit))
     monkeypatch.setattr('src.kzpy.motion.pulse_to_velocity_unit', lambda pulse, ax: pulse / ax.pulse_per_unit)
     yield
+# ===== pytest fixture: skip ensure_idle in tests =====
+@pytest.fixture(autouse=True)
+def skip_idle(monkeypatch):
+    """
+    同期版 move_* 系で内部的に呼ばれる ensure_idle を
+    テスト中は no-op にして、read_status の余計な呼び出しを防ぐ
+    """
+    import src.kzpy.motion as mmod
+    monkeypatch.setattr(mmod.MotionController, 'ensure_idle', lambda self, axis, poll_interval=0.1: None)
+    yield
 
 # ===== Dummy device for testing =====
 class DummyDevice:
