@@ -3,6 +3,7 @@ src/kzpy/device.py
 
 config/*.json から設定を読み込み、DeviceConfig モデルを元にシリアルデバイスとの通信を管理します。
 - デバイスの自動検出や接続確認、コマンド送信・受信処理を提供
+- 起動時に速度テーブル0をデフォルトで初期化し、操作後は元に戻す
 """
 
 from typing import Dict, Any, Optional, Callable
@@ -19,6 +20,7 @@ from .validate import (
 from .device import Device
 import functools
 import time
+
 
 def log_io(temp_methods: Optional[tuple] = None) -> Callable:
     """
@@ -37,12 +39,19 @@ def log_io(temp_methods: Optional[tuple] = None) -> Callable:
         return wrapper
     return decorator
 
-
 class MotionController:
     def __init__(self, device: Device):
-        """デバイスインスタンスを受け取り、構成情報を保持"""
+        """デバイスインスタンスを受け取り、構成情報を保持
+        起動時に全軸のvel_no=0をデフォルト値で初期化"""
         self._dev = device
         self._cfg = device._config
+        # 全ての軸に対し、速度テーブル0をデフォルト値で初期化
+        for ax_conf in self._cfg.get('axes', {}).keys():
+            try:
+                self.write_vel_tbl(axis=ax_conf, vel_no=0,
+                    max_velocity=1000, acc_time=16, dec_time=16, acc_type=2)
+            except Exception as e:
+                print(f"[WARN] axis {ax_conf} default vel table init failed: {e}")
 
     def _exec_int(self, name: str, **kwargs) -> Dict[str, Any]:
         """キーワード引数を整数に変換し、コマンドを実行。送受信を print でログ出力"""
@@ -51,11 +60,9 @@ class MotionController:
         resp = self._dev._execute_command(name, **send_args)
         print(f"[CMD RECV] {name} → {resp}")
         return resp
-    
+
     def ensure_idle(self, axis: int, poll_interval: float = 0.1):
-        """
-        コマンド実行前後に呼び出して、デバイスがアイドル状態 (status=="0") になるまで待機
-        """
+        """コマンド実行前後に呼び出して、デバイスがアイドル状態(status=="0")になるまで待機"""
         while True:
             sta = self.read_status(axis=axis)
             if sta.get('status') == '0':
@@ -64,19 +71,15 @@ class MotionController:
             time.sleep(poll_interval)
 
     def _get_processor(self):
-        """コマンドプロセッサを取得（variantなどにアクセスする用途）"""
         return getattr(self._dev, '_cmd', None) or getattr(self._dev, '_processor', None)
 
     def _convert_velocity_to_pulses(self, velocity: float, ax_conf: dict) -> int:
-        """速度（単位系）をパルス数に変換"""
         return velocity_unit_to_pulse(velocity, ax_conf)
 
     def _convert_pulses_to_velocity(self, pulses: int, ax_conf: dict) -> float:
-        """パルス数を速度（単位系）に変換"""
         return pulse_to_velocity_unit(pulses, ax_conf)
 
     def _get_vel_table_scaling(self, orig: dict, max_pulse: int) -> float:
-        """元の速度テーブルと新しい最大速度の比率を求める"""
         orig_max = int(orig.get('max_vel', max_pulse))
         return max_pulse / orig_max if orig_max else 1.0
 
@@ -87,6 +90,7 @@ class MotionController:
         start_pulse = int(max_pulse * 0.8)
 
         proc = self._get_processor()
+        # 常に現在のテーブルを読み出す
         orig = self._exec_int('read_vel_tbl', ax_num=ax, vel_no=vel_no)
         orig['_variant'] = getattr(proc, 'variant', None)
 
@@ -101,7 +105,6 @@ class MotionController:
             'acc_time':  new_acc_time,
             'acc_type':  int(orig.get('acc_type', 1)),
         }
-
         if 'dec_time' in orig:
             orig_dec = float(orig.get('dec_time', orig['acc_time']))
             write_args['dec_time'] = max(1, int(orig_dec * scale))
@@ -114,7 +117,6 @@ class MotionController:
         proc = self._get_processor()
         if '_variant' in orig and orig['_variant'] is not None:
             proc.variant = orig['_variant']
-
         args_list = proc.cmd_map['write_vel_tbl']['args']
         restore_args = {arg: int(orig[arg]) for arg in args_list if arg in orig}
         print(f"[DEBUG] Restoring write_vel_tbl variant={getattr(proc, 'variant', None)}, args={restore_args}")
@@ -122,111 +124,67 @@ class MotionController:
 
     @log_io(temp_methods=('move_relative_sync','move_absolute_sync','home_sync'))
     def move_relative(self, axis: int, length: float, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """相対移動を実行（非同期）"""
-        # 短絡的には同期版を呼び出す
         return self.move_relative_sync(axis, length, velocity, vel_no)
 
     def move_relative_sync(
         self, axis: int, length: float, velocity: float,
         vel_no: Optional[int] = None, buffer: float = 0.2
     ) -> Dict[str, Any]:
-        """
-        相対移動を実行し、
-        - 実行前にアイドル待ち
-        - コマンド送信
-        - 期待所要時間(length/velocity)+buffer だけ sleep
-        - 完了確認
-        """
-        # 1) 実行前 idle 確認
         self.ensure_idle(axis)
         ax_conf = get_axis_conf(self._cfg, axis)
         pulse_len = length_unit_to_pulse(length, ax_conf)
         table_no = vel_no or self._dev.target_vel_no
-        # 2) 一時速度変更
-        orig = self._temp_set_velocity(axis, table_no, velocity) if table_no else None
-        # 3) 移動コマンド
+        orig = self._temp_set_velocity(axis, table_no, velocity) if table_no is not None else None
         resp = self._exec_int('move_relative', ax_num=axis, vel_no=table_no, length=pulse_len, pat=1)
-        # 4) 待機時間計算
-        wait_time = (length / velocity) + buffer
-        print(f"[WAIT] move_relative sleeping {wait_time:.2f}s")
-        time.sleep(wait_time)
-        # 5) 完了確認
+        time.sleep((length / velocity) + buffer)
         self.ensure_idle(axis)
-        # 6) テーブル復帰
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
-        # 7) 結果整形
-        return {
-            'length_pulse': pulse_len,
-            'velocity': velocity,
-            'velocity_pulse': self._convert_velocity_to_pulses(velocity, ax_conf),
-            **resp
-        }
+        return {'length_pulse': pulse_len, 'velocity': velocity, 'velocity_pulse': self._convert_velocity_to_pulses(velocity, ax_conf), **resp}
 
     @log_io(temp_methods=('move_relative_sync','move_absolute_sync','home_sync'))
     def move_absolute(self, axis: int, position: float, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """絶対移動を実行（非同期）"""
         return self.move_absolute_sync(axis, position, velocity, vel_no)
 
     def move_absolute_sync(
         self, axis: int, position: float, velocity: float,
         vel_no: Optional[int] = None, buffer: float = 0.2
     ) -> Dict[str, Any]:
-        # 1) idle 待ち
         self.ensure_idle(axis)
         ax_conf = get_axis_conf(self._cfg, axis)
         pulse_pos = length_unit_to_pulse(position, ax_conf)
         table_no = vel_no or self._dev.target_vel_no
-        orig = self._temp_set_velocity(axis, table_no, velocity) if table_no else None
+        orig = self._temp_set_velocity(axis, table_no, velocity) if table_no is not None else None
         resp = self._exec_int('move_absolute', ax_num=axis, vel_no=table_no, length=pulse_pos, pat=1)
-        wait_time = (position / velocity) + buffer
-        print(f"[WAIT] move_absolute sleeping {wait_time:.2f}s")
-        time.sleep(wait_time)
+        time.sleep((position / velocity) + buffer)
         self.ensure_idle(axis)
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
-        return {
-            'position': resp.get('length'),
-            'position_pulse': pulse_pos,
-            'velocity': velocity,
-            'velocity_pulse': self._convert_velocity_to_pulses(velocity, ax_conf),
-            **resp
-        }
+        return {'position': resp.get('length'), 'position_pulse': pulse_pos, 'velocity': velocity, 'velocity_pulse': self._convert_velocity_to_pulses(velocity, ax_conf), **resp}
 
     @log_io(temp_methods=('move_relative_sync','move_absolute_sync','home_sync'))
     def home(self, axis: int, velocity: float, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """原点復帰動作を実行（非同期）"""
         return self.home_sync(axis, velocity, vel_no)
 
     def home_sync(self, axis: int, velocity: float, vel_no: Optional[int] = None, buffer: float = 0.2) -> Dict[str, Any]:
-        # 1) idle 待ち
         self.ensure_idle(axis)
         ax_conf = get_axis_conf(self._cfg, axis)
         pulse_vel = self._convert_velocity_to_pulses(velocity, ax_conf)
         table_no = vel_no or self._dev.target_vel_no
-        orig = self._temp_set_velocity(axis, table_no, velocity) if table_no else None
+        orig = self._temp_set_velocity(axis, table_no, velocity) if table_no is not None else None
         resp = self._exec_int('home', ax_num=axis, vel_no=table_no, pat=1)
-        # 原点復帰距離不明のため速度のみで待機
-        wait_time = (1.0) + buffer  # 経験的所要時間 + buffer
-        print(f"[WAIT] home sleeping {wait_time:.2f}s")
-        time.sleep(wait_time)
+        time.sleep(1.0 + buffer)
         self.ensure_idle(axis)
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
-        return {
-            'velocity': velocity,
-            'velocity_pulse': pulse_vel,
-            **resp
-        }
+        return {'velocity': velocity, 'velocity_pulse': pulse_vel, **resp}
 
     @log_io()
     def move_stop(self, axis: int, pat: int = 1) -> Dict[str, Any]:
-        """現在の動作を停止させる"""
         return self._exec_int('move_stop', ax_num=axis, pat=pat)
 
     @log_io()
     def read_position(self, axis: int) -> Dict[str, Any]:
-        """現在位置を取得する"""
         ax_conf = get_axis_conf(self._cfg, axis)
         resp = self._exec_int('read_position', ax_num=axis)
         pulse = int(resp['pos'])
@@ -235,23 +193,14 @@ class MotionController:
 
     @log_io()
     def read_status(self, axis: int) -> Dict[str, Any]:
-        """現在のステータスを取得する（モーション中かなど）"""
         return self._exec_int('read_status', ax_num=axis)
 
     @log_io()
     def read_vel_tbl(self, axis: int, vel_no: Optional[int] = None) -> Dict[str, Any]:
-        """速度テーブルの情報を取得する"""
         table_no = vel_no or self._dev.target_vel_no
         resp = self._exec_int('read_vel_tbl', ax_num=axis, vel_no=table_no)
         ax_conf = get_axis_conf(self._cfg, axis)
-
-        return {
-            'vel_no': table_no,
-            'start_velocity': self._convert_pulses_to_velocity(int(resp['start_vel']), ax_conf),
-            'max_velocity': self._convert_pulses_to_velocity(int(resp['max_vel']), ax_conf),
-            'acc_time': int(resp['acc_time']),
-            'acc_type': int(resp.get('acc_type', 0)),
-        }
+        return {'vel_no': table_no, 'start_velocity': self._convert_pulses_to_velocity(int(resp['start_vel']), ax_conf), 'max_velocity': self._convert_pulses_to_velocity(int(resp['max_vel']), ax_conf), 'acc_time': int(resp['acc_time']), 'acc_type': int(resp.get('acc_type', 0))}
 
     @log_io()
     def write_vel_tbl(
@@ -266,13 +215,10 @@ class MotionController:
         """速度テーブルの書き換えを行う"""
         ax_conf = get_axis_conf(self._cfg, axis)
         proc = self._get_processor()
-        variant = proc.variant
 
-        max_p = self._convert_velocity_to_pulses(max_velocity, ax_conf)
-        start_p = int(max_p * 0.8)
-
+        # 読み取り
         orig = self._exec_int('read_vel_tbl', ax_num=axis, vel_no=vel_no)
-        scale = self._get_vel_table_scaling(orig, max_p)
+        scale = self._get_vel_table_scaling(orig, velocity_unit_to_pulse(max_velocity, ax_conf))
 
         acc_time_val = validate_acc_time(acc_time or int(float(orig.get('acc_time', 1)) * scale), ax_conf)
         dec_time_val = (
@@ -280,38 +226,25 @@ class MotionController:
             if 'dec_time' in proc.cmd_map['write_vel_tbl']['args'] else None
         )
         acc_type_val = (
-            validate_acc_type(acc_type if acc_type is not None else 1, variant)
+            validate_acc_type(acc_type if acc_type is not None else 1, getattr(proc, 'variant', None))
             if 'acc_type' in proc.cmd_map['write_vel_tbl']['args'] else None
         )
 
-        debug_parts = [f"start: {start_p}", f"max: {max_p}", f"acc_time: {acc_time_val}"]
+        debug_parts = [f"start: {int(orig.get('start_vel', 0))}", f"max: {velocity_unit_to_pulse(max_velocity, ax_conf)}", f"acc_time: {acc_time_val}"]
         if dec_time_val is not None:
             debug_parts.append(f"dec_time: {dec_time_val}")
         if acc_type_val is not None:
             debug_parts.append(f"acc_type: {acc_type_val}")
         print(f"[DEBUG] write_vel_tbl pulses -> {', '.join(debug_parts)}")
 
-        write_args = {
-            'ax_num': axis,
-            'vel_no': vel_no,
-            'start_vel': start_p,
-            'max_vel': max_p,
-            'acc_time': acc_time_val,
-        }
+        write_args = {'ax_num': axis, 'vel_no': vel_no, 'start_vel': int(velocity_unit_to_pulse(max_velocity, ax_conf) * 0.8), 'max_vel': int(velocity_unit_to_pulse(max_velocity, ax_conf)), 'acc_time': acc_time_val}
         if dec_time_val is not None:
             write_args['dec_time'] = dec_time_val
         if acc_type_val is not None:
             write_args['acc_type'] = acc_type_val
 
         resp = self._exec_int('write_vel_tbl', **write_args)
-
-        result = {
-            'start_velocity': self._convert_pulses_to_velocity(start_p, ax_conf),
-            'max_velocity': max_velocity,
-            'start_pulse': start_p,
-            'max_pulse': max_p,
-            'acc_time': acc_time_val,
-        }
+        result = {'start_velocity': self._convert_pulses_to_velocity(write_args['start_vel'], ax_conf), 'max_velocity': max_velocity, 'start_pulse': write_args['start_vel'], 'max_pulse': write_args['max_vel'], 'acc_time': acc_time_val}
         if dec_time_val is not None:
             result['dec_time'] = dec_time_val
         if acc_type_val is not None:
