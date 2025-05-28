@@ -22,6 +22,9 @@ from ._type import DeviceConfig
 import functools
 import time
 
+START_VEL = 5
+ACC_TIME = 5
+DEC_TIME = 5
 
 def log_io(temp_methods: Optional[tuple] = None) -> Callable:
     """
@@ -64,8 +67,8 @@ class MotionController:
                     axis=axis_num,
                     vel_no=0,
                     max_velocity=1000,
-                    acc_time=16,
-                    dec_time=16,
+                    acc_time=ACC_TIME,
+                    dec_time=DEC_TIME,
                     acc_type=2
                 )
             except Exception as e:
@@ -106,7 +109,7 @@ class MotionController:
         """一時的に速度テーブルを書き換える"""
         axis_cfg = get_axis_conf(self._cfg, ax)
         max_pulse = self._convert_velocity_to_pulses(velocity, axis_cfg)
-        start_pulse = int(max_pulse * 0.8)
+        start_pulse = int(START_VEL)
 
         proc = self._get_processor()
         # 常に現在のテーブルを読み出す
@@ -155,7 +158,7 @@ class MotionController:
         table_no = vel_no or self._dev.target_vel_no
         orig = self._temp_set_velocity(axis, table_no, velocity) if table_no is not None else None
         resp = self._exec_int('move_relative', ax_num=axis, vel_no=table_no, length=pulse_len, pat=1)
-        time.sleep((length / velocity) + buffer)
+        time.sleep((abs(length) / velocity) + buffer)
         self.ensure_idle(axis)
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
@@ -175,7 +178,7 @@ class MotionController:
         table_no = vel_no or self._dev.target_vel_no
         orig = self._temp_set_velocity(axis, table_no, velocity) if table_no is not None else None
         resp = self._exec_int('move_absolute', ax_num=axis, vel_no=table_no, length=pulse_pos, pat=1)
-        time.sleep((position / velocity) + buffer)
+        time.sleep((abs(position) / velocity) + buffer)
         self.ensure_idle(axis)
         if orig and self._dev.restore_vel_table:
             self._restore_vel_tbl(orig)
@@ -256,7 +259,7 @@ class MotionController:
             debug_parts.append(f"acc_type: {acc_type_val}")
         print(f"[DEBUG] write_vel_tbl pulses -> {', '.join(debug_parts)}")
 
-        write_args = {'ax_num': axis, 'vel_no': vel_no, 'start_vel': int(velocity_unit_to_pulse(max_velocity, ax_conf) * 0.8), 'max_vel': int(velocity_unit_to_pulse(max_velocity, ax_conf)), 'acc_time': acc_time_val}
+        write_args = {'ax_num': axis, 'vel_no': vel_no, 'start_vel': int(START_VEL), 'max_vel': int(velocity_unit_to_pulse(max_velocity, ax_conf)), 'acc_time': acc_time_val}
         if dec_time_val is not None:
             write_args['dec_time'] = dec_time_val
         if acc_type_val is not None:

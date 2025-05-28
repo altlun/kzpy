@@ -122,7 +122,7 @@ def test_write_vel_tbl():
     mc = MotionController(dev)
 
     res = mc.write_vel_tbl(axis=1, vel_no=3, max_velocity=2.0, acc_time=4, dec_time=5, acc_type=1)
-    assert res['start_pulse'] == 16  # 2.0 * 10 * 0.8
+    assert res['start_pulse'] == 5  # 2.0 * 10 * 0.8
     assert res['max_pulse'] == 20
     assert res['acc_time'] == 4
     assert res['dec_time'] == 5

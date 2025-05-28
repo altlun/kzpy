@@ -1,6 +1,6 @@
 [project]
 name = "kzpy"
-version = "0.2.16"
+version = "0.4.3"
 description = "khozu device manager"
 requires-python = ">=3.11"
 dependencies = [
